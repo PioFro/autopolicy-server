@@ -20,34 +20,34 @@ const DEFAULT_DB = MONGO
 const DEFAULT_CONNECTION_STRING = ""
 
 type Server struct {
-	ctx      context.Context
-	wg       sync.WaitGroup
-	
+	ctx context.Context
+	wg  sync.WaitGroup
+
 	hostname string
-	opts struct {
-		dbg            int
-		me             string
+	opts     struct {
+		dbg int
+		me  string
 		//--
-		http           string
-		db             string
-		auto           bool
-		fix            bool
+		http   string
+		db     string
+		auto   bool
+		fix    bool
 		typeDB int
-		mongo string
+		mongo  string
 	}
 
-	api     *Api
-	db      idb
+	api *Api
+	db  idb
 }
 
-func NewIDB(server * Server) (idb, error){
-	if server.opts.typeDB == MONGO{
-		return NewMongoDB(server),nil
+func NewIDB(server *Server) (idb, error) {
+	if server.opts.typeDB == MONGO {
+		return NewMongoDB(server), nil
 	}
-	if server.opts.typeDB == FILES{
-		return NewDB(server),nil
+	if server.opts.typeDB == FILES {
+		return NewDB(server), nil
 	}
-	return nil, errors.New(fmt.Sprint("Forbidden DB type. Got ",server.opts.typeDB, " expected ",MONGO,"or ",FILES))
+	return nil, errors.New(fmt.Sprint("Forbidden DB type. Got ", server.opts.typeDB, " expected ", MONGO, "or ", FILES))
 }
 
 func main() {
@@ -56,7 +56,9 @@ func main() {
 
 	S.ctx = context.Background()
 	S.hostname, err = os.Hostname()
-	if err != nil { dieErr("main", err) }
+	if err != nil {
+		dieErr("main", err)
+	}
 
 	// command-line args
 	flag.IntVar(&S.opts.dbg, "dbg", 2, "debugging level")
@@ -65,11 +67,16 @@ func main() {
 	flag.StringVar(&S.opts.db, "db", "localhost", "path to filesystem database or IP address of the database")
 	flag.BoolVar(&S.opts.auto, "auto", true, "automatically add first seen MAC on a port")
 	flag.BoolVar(&S.opts.fix, "fix", true, "fix missing keys in profiles (use old values)")
-	flag.IntVar(&S.opts.typeDB, "db-type",DEFAULT_DB,fmt.Sprint("Which database is used. Mongo = ",MONGO," local file storage : ",FILES, "."))
+	flag.IntVar(&S.opts.typeDB, "db-type", DEFAULT_DB, fmt.Sprint("Which database is used. Mongo = ", MONGO, " local file storage : ", FILES, "."))
+	var resolver string
+	var port int
+	flag.StringVar(&resolver, "dns-ip", "8.8.8.8", "Provide the IP address of chosen DNS server")
+	flag.IntVar(&port, "dns-port", 53, "Port to query the DNS server")
 	flag.Parse()
+	configureDNS(resolver, uint16(port))
 	dbgSet(S.opts.dbg)
 	S.db, err = NewIDB(S)
-	if err !=nil{
+	if err != nil {
 		dieErr("INIT", err)
 	}
 	S.api = NewApi(S)

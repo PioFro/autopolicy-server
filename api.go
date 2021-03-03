@@ -22,49 +22,52 @@ package main
 import (
 	"errors"
 	// "fmt"
+	"encoding/json"
+	"github.com/julienschmidt/httprouter"
 	"io"
 	"net/http"
 	"net/url"
-	"encoding/json"
-	"github.com/julienschmidt/httprouter"
 	// "google.golang.org/genproto/googleapis/rpc/code"
 )
 
 type (
 	Api struct {
-	S        *Server
-	rt       *httprouter.Router
+		S  *Server
+		rt *httprouter.Router
 	}
 
 	ApiRequest struct {
-		api     *Api
-		resp    http.ResponseWriter
-		req     *http.Request
+		api  *Api
+		resp http.ResponseWriter
+		req  *http.Request
 
-		param   map[string]string // URI params
-		query   url.Values        // query params
-		in      interface{}       // input JSON (unmarshalled)
+		param map[string]string // URI params
+		query url.Values        // query params
+		in    interface{}       // input JSON (unmarshalled)
 
-		status  int               // HTTP status code
-		out     interface{}       // output JSON (will be marshalled)
+		status int         // HTTP status code
+		out    interface{} // output JSON (will be marshalled)
 
 		written bool
 	}
 
 	ApiHandler func(req *ApiRequest) *ApiRequest
 )
-var(ProfileNotFound = errors.New("Profile Not found. Posting for profiling."))
+
+var (
+	ProfileNotFound = errors.New("Profile Not found. Posting for profiling.")
+)
 
 func NewApi(S *Server) *Api {
-    var a Api
+	var a Api
 
-    a.S = S
+	a.S = S
 
 	a.rt = httprouter.New()
 	a.rt.POST("/v1/authorize", a.Wrap(a.Authorize))
-	a.rt.POST("/v1/postprofile",a.Wrap(a.PostProfile))
+	a.rt.POST("/v1/postprofile", a.Wrap(a.PostProfile))
 
-    return &a
+	return &a
 }
 
 func (a *Api) ServeHttp(addr string) {
@@ -127,9 +130,9 @@ func (ar *ApiRequest) Write() *ApiRequest {
 
 func (ar *ApiRequest) Err(status int, message string, details interface{}) *ApiRequest {
 	ar.out = map[string]interface{}{
-		"error": map[string]interface{} {
-			"code":   3,
-			"status": "INVALID_ARGUMENT",
+		"error": map[string]interface{}{
+			"code":    3,
+			"status":  "INVALID_ARGUMENT",
 			"message": message,
 			"details": details,
 		},
@@ -142,23 +145,36 @@ func (a *Api) Authorize(ar *ApiRequest) *ApiRequest {
 	S := a.S
 
 	input, ok := ar.in.(map[string]interface{})
-	if !ok { return ar.Err(http.StatusBadRequest, "invalid input", nil) }
+	if !ok {
+		return ar.Err(http.StatusBadRequest, "invalid input", nil)
+	}
 
 	// convert
 	id, err := S.NewIdentity(input)
-	if err == nil { err = id.CheckRequired() }
-	if err != nil { return ar.Err(http.StatusBadRequest, "invalid identity", err.Error()) }
+	if err == nil {
+		err = id.CheckRequired()
+	}
+	if err != nil {
+		return ar.Err(http.StatusBadRequest, "invalid identity", err.Error())
+	}
 
 	// verify it's not a downgrade attack
 	id, err = S.db.Verify(id)
-	if err != nil { return ar.Err(http.StatusForbidden, err.Error(), nil) } // NB: permanent error
+	if err != nil {
+		return ar.Err(http.StatusForbidden, err.Error(), nil)
+	} // NB: permanent error
 
 	// authorize, fetch the traffic profile
 	pf, err := S.db.Authorize(id)
-	if err == ProfileNotFound{
-		return ar.Err(http.StatusNotFound, err.Error(),nil)
+	if err == ProfileNotFound {
+		return ar.Err(http.StatusNotFound, err.Error(), nil)
 	}
-	if err != nil { return ar.Err(http.StatusServiceUnavailable, err.Error(), nil) } // NB: will retry
+	if err != nil {
+		return ar.Err(http.StatusServiceUnavailable, err.Error(), nil)
+	} // NB: will retry
+	pf, err = resolveProfile(pf, false)
+	if err != nil {
+	}
 	ar.out = pf
 	return ar
 }
@@ -167,21 +183,38 @@ func (a *Api) PostProfile(ar *ApiRequest) *ApiRequest {
 
 	S := a.S
 	input, ok := ar.in.(map[string]interface{}) //two layers
-	if !ok { return ar.Err(http.StatusBadRequest, "invalid input", nil) }
-	inAPID,ok := input["apid"].(map[string]interface{})
-	if !ok{return ar.Err(http.StatusBadRequest, "invalid identity input", nil)}
-	inProfile,ok := input["profile"].(map[string]interface{})
-	if !ok{return ar.Err(http.StatusBadRequest, "Invalid profile input", nil)}
+	if !ok {
+		return ar.Err(http.StatusBadRequest, "invalid input", nil)
+	}
+	inAPID, ok := input["apid"].(map[string]interface{})
+	if !ok {
+		return ar.Err(http.StatusBadRequest, "invalid identity input", nil)
+	}
+	inProfile, ok := input["profile"].(map[string]interface{})
+	if !ok {
+		return ar.Err(http.StatusBadRequest, "Invalid profile input", nil)
+	}
 
 	id, err := S.NewIdentity(inAPID)
-	if err == nil { err = id.CheckRequired() }
-	if err != nil { return ar.Err(http.StatusBadRequest, "invalid identity", err.Error()) }
+	if err == nil {
+		err = id.CheckRequired()
+	}
+	if err != nil {
+		return ar.Err(http.StatusBadRequest, "invalid identity", err.Error())
+	}
 	// verify it's not a downgrade attack
+	dbg(2, "Add Profile", "Parsing APID and Profile was successful.")
 	id, err = S.db.Verify(id)
-	if err != nil { return ar.Err(http.StatusForbidden, err.Error(), nil) } // NB: permanent error
-
-	pf, err := S.db.AddProfile(inProfile,id)
-	// TODO: Reverse Resolve profile
+	if err != nil {
+		return ar.Err(http.StatusForbidden, err.Error(), nil)
+	} // NB: permanent error
+	dbg(2, "Add Profile", "APID verified. Proceeding with resolving the profile.")
+	pf, err := resolveProfile(inProfile, true)
+	if err != nil {
+		ar.out = err
+		return ar
+	}
+	pf, err = S.db.AddProfile(pf, id)
 	ar.out = pf
 	return ar
 }

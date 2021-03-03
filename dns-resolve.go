@@ -20,11 +20,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	flags "github.com/jessevdk/go-flags"
 	"net"
 	"net/url"
-	"os"
+	"regexp"
 	"strings"
 )
 
@@ -35,32 +35,28 @@ var opts struct {
 	Domain     bool   `short:"d" long:"domain" description:"Output only domains"`
 }
 
-func resolve(address string, params [] string, reverse bool) ([] string,error){
-	_, err := flags.ParseArgs(&opts, params)
-	if err != nil{
-		os.Exit(1)
-	}
+func resolve(address string, reverse bool) ([]string, error) {
 	var r *net.Resolver
 	if opts.ResolverIP != "" {
 		r = &net.Resolver{
 			PreferGo: true,
-			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			Dial: func(ctx context.Context, network, adr string) (net.Conn, error) {
 				d := net.Dialer{}
-				return d.DialContext(ctx, opts.Protocol, fmt.Sprintf("%s:%d", opts.ResolverIP, opts.Port))
+				return d.DialContext(ctx, "udp", fmt.Sprintf("%s:%d", opts.ResolverIP, opts.Port))
 			},
 		}
 	}
-	if !reverse{
+	if !reverse {
 		u, err := url.Parse(address)
-		if err!=nil{
+		if err != nil {
 			return nil, err
 		}
-		if u.Host==""{
-			if strings.Count(address,"/")>0{
-				parts:=strings.Split(address,"/")
-				fmt.Println("parts ",parts)
-				for _,s := range parts{
-					if strings.Contains(s,"."){
+		if u.Host == "" {
+			if strings.Count(address, "/") > 0 {
+				parts := strings.Split(address, "/")
+				fmt.Println("parts ", parts)
+				for _, s := range parts {
+					if strings.Contains(s, ".") {
 						u.Host = s
 						break
 					}
@@ -69,20 +65,75 @@ func resolve(address string, params [] string, reverse bool) ([] string,error){
 				u.Host = address
 			}
 		}
-		addr,err:=r.LookupIP(context.Background(),"ip4",u.Host)
-		if err!=nil{
+		addr, err := r.LookupIP(context.Background(), "ip4", u.Host)
+		if err != nil {
 			return nil, err
 		}
-		ret := make([]string,1)
-		for _,a := range addr{
-			ret = append(ret,a.String())
+		ret := make([]string, 0)
+		for _, a := range addr {
+			ret = append(ret, a.String())
 		}
-		return ret,nil
-	}else {
+		return ret, nil
+	} else {
 		addr, err := r.LookupAddr(context.Background(), address)
 		if err != nil {
-			return nil,err
+			return nil, err
 		}
-		return addr,nil
+		return addr, nil
 	}
+}
+func configureDNS(resolver string, port uint16) {
+	opts.ResolverIP = resolver
+	opts.Port = port
+}
+
+func resolveProfile(profile Profile, reverse bool) (Profile, error) {
+	allows := make([]string, 0)
+	fromDevice, ok := profile["from_device"].(map[string]interface{})
+	if !ok {
+		return nil, errors.New("Unable to get from device")
+	}
+	allow, ok := fromDevice["allow"].([]interface{})
+	if !ok {
+		allows, ok = fromDevice["allow"].([]string)
+		if !ok {
+			return nil, errors.New("Unable to parse allow (both string and interface)")
+		}
+	} else {
+		for _, i := range allow {
+			allows = append(allows, fmt.Sprint(i))
+		}
+	}
+	dbg(2, "Resolve Profile", "Parsed profile to "+fmt.Sprint(allows))
+	var flowsAll []string
+	for _, flow := range allows {
+		destination := strings.Split(flow, " ")[1]
+		var addresses []string
+		if isIP(destination) {
+			if reverse {
+				addresses, _ = resolve(destination, true)
+			}
+		} else if !reverse {
+			addresses, _ = resolve(destination, false)
+		}
+		if addresses == nil {
+			flowsAll = append(flowsAll, flow)
+		} else {
+			for _, addr := range addresses {
+				flowsAll = append(flowsAll, strings.Replace(flow, destination, addr, -1))
+			}
+			dbg(3, "Resolver", "Added "+fmt.Sprint(len(addresses))+" reverse resolved addresses.")
+		}
+	}
+	dbg(2, "Resolver", "Resolved profile"+fmt.Sprint(flowsAll))
+	fd := make(map[string]interface{})
+	al := make(map[string]interface{})
+	al["allow"] = flowsAll
+	fd["from_device"] = al
+	return fd, nil
+
+}
+func isIP(destination string) bool {
+	re := regexp.MustCompile(`(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)){3}`)
+	return re.MatchString(destination)
 }
